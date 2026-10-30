@@ -8,6 +8,24 @@ IN: stack-checker.state
 
 SYMBOL: terminated?
 
+! Optional observer for extensions that track extra static information
+! during inference (for example extra/effect-rows). It is f by default, in
+! which case inference behaves exactly as without it.
+SYMBOL: inference-observer
+
+GENERIC: observe-word ( word observer -- )
+GENERIC: observe-quotation-enter ( known observer -- )
+GENERIC: observe-quotation-exit ( known observer -- )
+
+: ?observe-word ( word -- )
+    inference-observer get [ observe-word ] [ drop ] if* ;
+
+: ?observe-quotation-enter ( known -- )
+    inference-observer get [ observe-quotation-enter ] [ drop ] if* ;
+
+: ?observe-quotation-exit ( known -- )
+    inference-observer get [ observe-quotation-exit ] [ drop ] if* ;
+
 SYMBOL: input-count
 SYMBOL: inner-d-index
 

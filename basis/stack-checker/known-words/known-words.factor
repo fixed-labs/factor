@@ -133,7 +133,9 @@ M: composed-effect infer-call*
     terminated? get [ 1 infer-r> infer-call ] unless ;
 
 M: declared-effect infer-call*
-    [ [ known>> infer-call* ] keep ] with-effect-here check-declared-effect ;
+    dup ?observe-quotation-enter
+    [ [ [ known>> infer-call* ] keep ] with-effect-here check-declared-effect ] keep
+    ?observe-quotation-exit ;
 
 M: input-parameter infer-call* \ call unknown-macro-input ;
 
@@ -241,8 +243,12 @@ M: object infer-call* \ call bad-macro-input ;
     apply-word/effect ;
 
 M: runtime-effect infer-call*
-    [ push-d ] [ effect>> push-literal ] bi*
-    \ call-effect infer-call-effect ;
+    dup ?observe-quotation-enter
+    [
+        [ push-d ] [ effect>> push-literal ] bi*
+        \ call-effect infer-call-effect
+    ] keep
+    ?observe-quotation-exit ;
 
 { call-effect execute-effect } [
     dup t "no-compile" set-word-prop

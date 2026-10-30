@@ -177,6 +177,7 @@ M: declared-effect (undeclared-known) known>> (undeclared-known) ;
     ] tri ;
 
 M: word apply-object
+    dup ?observe-word
     dup inline? [ inline-word ] [ non-inline-word ] if ;
 
 M: fry-word apply-object
