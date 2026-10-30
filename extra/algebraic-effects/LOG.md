@@ -75,3 +75,15 @@ never returned into.
   Fix: move the step into named words `get-step`/`put-step`.
   After: 4000 iters (8000 ops) in ~24 ms, depth constant (42).
 - Milestone 1 committed + pushed (core + state, all tests pass).
+- Added examples: `algebraic-effects.generators` (push `collect`, pull
+  `<gen>`/`gen-next` with escaped resumptions), `.restarts` (resumable
+  exceptions: default / strict via discontinue / ask-outer),
+  `.console` (input-line/output-line effects, real vs mock handler).
+- Bug of my own worth remembering: in a clause, `invalid-number boa`
+  *executes* the ERROR: word (throws immediately from the clause), so the
+  error never went through `discontinue` and cleanups never ran. Must be
+  `\ invalid-number boa`. Same trap applies to EFFECT: classes.
+- Other test-writing traps: integers are not sequences (`4 [ ] map` fails,
+  use `replicate`/`<iota>`); body quotations must be exactly ( -- obj ),
+  checked at runtime by `call(`.
+- All tests pass: `./factor -run=tools.test algebraic-effects` EXIT 0.
