@@ -1,7 +1,7 @@
 ! Copyright (C) 2026 Jake Zerrer.
 ! See https://factorcode.org/license.txt for BSD license.
 USING: accessors assocs classes classes.private classes.tuple
-classes.tuple.parser combinators continuations effects kernel
+classes.tuple.parser combinators continuations effects kernel kernel.private
 hashtables namespaces parser sequences words ;
 IN: algebraic-effects
 
@@ -16,6 +16,8 @@ TUPLE: resumption continuation handler ;
 
 TUPLE: handler clauses return ;
 
+C: <handler> handler
+
 <PRIVATE
 
 ! The current prompt lives in a mutable cell, bound in the
@@ -24,7 +26,15 @@ TUPLE: handler clauses return ;
 ! namestack sees the live prompt.
 SYMBOL: current-prompt
 
-TUPLE: prompt-cell k ;
+! The cell also records the thread that owns it: threads inherit
+! the namestack, and a child thread must not abort into its
+! parent's handle site.
+TUPLE: prompt-cell k thread ;
+
+: current-thread ( -- thread ) OBJ-CURRENT-THREAD special-object ; inline
+
+: live-prompt? ( -- ? )
+    current-prompt get [ thread>> current-thread eq? ] [ f ] if* ;
 
 ! Messages sent to a handle site (prompt).
 TUPLE: returned value ;
@@ -50,19 +60,25 @@ DEFER: (handle)
 PRIVATE>
 
 : perform ( op -- result )
-    current-prompt get [ dup unhandled-effect ] unless
+    live-prompt? [ dup unhandled-effect ] unless
     [ performed boa abort-to-prompt ] callcc1 nip
-    dup prompt>> current-prompt get k<<
+    dup prompt>> current-prompt get
+    [ k<< ] [ current-thread swap thread<< ] bi
     dup resume-msg? [ value>> ] [ error>> throw ] if ;
 
-: resume ( value resumption -- obj )
-    [ continuation>> ] [ handler>> ] bi
+! Resume under a different handler than the one that caught the
+! op. With it a clause can implement shallow-handler patterns
+! (e.g. state machines that change handler per step).
+: resume-with ( value resumption handler -- obj )
+    [ continuation>> ] dip
     [
         [
             [ current-prompt get k>> resume-msg boa ] dip
             continue-with
         ] 2curry
     ] dip (handle) ;
+
+: resume ( value resumption -- obj ) dup handler>> resume-with ;
 
 : discontinue ( error resumption -- obj )
     [ continuation>> ] [ handler>> ] bi
@@ -98,7 +114,7 @@ PRIVATE>
 
 :: (handle) ( body handler -- obj )
     [| k |
-        k prompt-cell boa current-prompt associate
+        k current-thread prompt-cell boa current-prompt associate
         [ body run-region ] with-variables
     ] callcc1
     handler dispatch ;

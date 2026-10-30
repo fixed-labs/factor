@@ -87,3 +87,21 @@ never returned into.
   use `replicate`/`<iota>`); body quotations must be exactly ( -- obj ),
   checked at runtime by `call(`.
 - All tests pass: `./factor -run=tools.test algebraic-effects` EXIT 0.
+- Added `resume-with ( value resumption handler -- obj )` and
+  `<handler>` (shallow-style handler switching); `resume` is now
+  `dup handler>> resume-with`. Test added.
+- THREAD BUG found + fixed: Factor threads inherit the parent's namestack
+  (`spawn` passes `get-namestack`). A child thread spawned inside a
+  handle that performed an op continue-with'd into the *parent's*
+  handle-site continuation, i.e. the child ran the rest of the parent's
+  script. Fix: `prompt-cell` records its owning thread
+  (`OBJ-CURRENT-THREAD special-object`); `perform` treats a prompt owned
+  by another thread as no handler (`unhandled-effect`); a resume rebinds
+  the cell's owner to the resuming thread. Test added (promise + spawn).
+- Benchmark vocab `algebraic-effects.benchmark` (MAIN), run 3x:
+  `./factor -run=algebraic-effects.benchmark </dev/null` -> ~/bench3.log.
+  perform+resume 2.6-3.3 us, throw/recover 0.9-1.2 us, raw callcc round
+  trip 0.44-0.58 us, plain call 7-12 ns, +1000 frames -> ~5 us,
+  forwarding ~3.3 us per skipped handler. Full table in NOTES.md.
+- Wrote NOTES.md (design, semantics, interactions, pitfalls, numbers).
+- Final: 55 tests, all pass. Committed + pushed.

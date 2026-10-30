@@ -1,7 +1,8 @@
 ! Copyright (C) 2026 Jake Zerrer.
 ! See https://factorcode.org/license.txt for BSD license.
 USING: accessors algebraic-effects arrays continuations kernel
-locals math namespaces sequences tools.test ;
+locals math namespaces sequences tools.test concurrency.promises calendar ;
+FROM: threads => spawn ;
 IN: algebraic-effects.tests
 
 EFFECT: ask ;
@@ -162,3 +163,26 @@ SYMBOL: color
 ! An op performed after the handle returned is unhandled again
 { 1 } [ [ 1 ] { { ask [ 2drop 0 ] } } handle ] unit-test
 [ ask ] [ unhandled-effect? ] must-fail-with
+
+! resume-with: the clause switches handler for the rest of the
+! computation (shallow-handler style)
+{ { 1 2 2 } } [
+    [ ask ask ask 3array ]
+    { { ask [
+        nip 1 swap { { ask [ nip 2 swap resume ] } } [ ] <handler>
+        resume-with
+    ] } } handle
+] unit-test
+
+! Handlers live in the namestack, so they do not cross threads:
+! a thread spawned inside a handle sees no handler.
+{ t } [
+    [let
+        <promise> :> p
+        [
+            [ [ ask ] [ ] recover p fulfill ] "effect-thread" spawn drop
+            p 5 seconds ?promise-timeout
+        ] { { ask [ 2drop "handled?!" ] } } handle
+        unhandled-effect?
+    ]
+] unit-test
