@@ -88,4 +88,36 @@ TUPLE: ask ;
     "        (ns/op)    (ns/op)    (ns/op)      (ns/op)      (ns/op)    (ns/op)    (ns/op)" print
     { 0 10 100 1000 10000 } [ row ] each ;
 
-MAIN: run-bench
+
+
+! forwarding: the matching handler is h empty handlers further out
+: nest-handlers ( h quot: ( -- obj ) -- obj )
+    over 0 <= [ nip call( -- obj ) ] [
+        [ 1 - ] dip [ nest-handlers ] 2curry { } handle
+    ] if ;
+
+:: bench-forward ( h m -- ns/op )
+    nano-count
+    [ h [ m perform-loop ] nest-handlers ] ask-clauses handle drop
+    nano-count swap - m /f ;
+
+! creating m fibers that stay alive (context pool exhausted), then
+! discarding them
+:: bench-create-live ( m -- create-ns discard-ns )
+    nano-count
+    m [ [ [ ] shift0 ] reset0 ] replicate
+    nano-count rot - m /f swap
+    nano-count swap [ discard ] each nano-count swap - m /f ;
+
+: run-bench-2 ( -- )
+    "handlers between perform and its handler:" print
+    { 0 1 5 20 } [ dup 20000 bench-forward "  %3d skipped: %8.1f ns/op\n" printf ] each
+    "fibers kept alive (pool of 10 exhausted):" print
+    { 10 1000 10000 } [
+        dup bench-create-live
+        "  %6d live: create+suspend %8.1f ns, discard %8.1f ns\n" printf
+    ] each ;
+
+: bench-main ( -- ) run-bench run-bench-2 ;
+
+MAIN: bench-main

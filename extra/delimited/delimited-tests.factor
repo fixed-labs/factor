@@ -222,3 +222,11 @@ TUPLE: sub-eff < base-eff ;
 
 ! an effect nobody handles
 [ [ 5 perform ] { { ask [ 2drop 0 ] } } handle ] [ no-prompt? ] must-fail-with
+
+! ---- context reuse ----
+
+! a reused (parked) context must not accumulate frames
+{ t } [
+    5 [ [ get-callstack callstack>array length ] reset0 ] replicate
+    dup first [ = ] curry all?
+] unit-test

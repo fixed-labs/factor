@@ -23,3 +23,16 @@ Running log so another agent can resume. Newest at the bottom.
 - `./factor -run=tools.test delimited </dev/null` -> all pass (incl. 1e6 performs in one handle with flat stack, perform at depth 10,000, gc/compact-gc with 101 suspended fibers, 100k aborted handles without leaking contexts, resume from another green thread).
 - First bench: perform via clause table was ~530 ns/op because non-literal `instance?` costs ~400 ns. Replaced with a per-handle class-of -> clause cache (hashtable, `class<=` scan on miss). Now ~160 ns/op. Added `handle-with` (user-written dispatcher) + `unhandled`.
 - Bench (`./factor -run=delimited.bench </dev/null`), see NOTES.md for the table.
+
+## GC stress, debug VM, context pool
+- Added extra/delimited/stress (N generators via `handle*`, data kept on fiber stacks, nursery churn, `gc` every 5 rounds, `compact-gc` every 13).
+  `./factor -young=1 -aging=1 -tenured=16 -run=delimited.stress 10000 </dev/null` -> ok.
+- Built a debug VM out of tree: `mkdir ~/dbg; cp -r GNUmakefile vm build.sh ~/dbg; cd ~/dbg; make DEBUG=1 -j2` (~4 min);
+  run with `~/dbg/factor -i=/home/dev/repo/factor.image ...`. Tests + stress pass on it with -young=1 -aging=1.
+- Bench showed fresh-context creation is 20-35 us (3 mmaps) once the VM's 10-entry pool is empty, and freeing is a munmap.
+  Added a library-level pool: finished bodies park their context in `set-context` (`fiber-pool-limit`, default 256); `start-fiber` switches into a parked one.
+- BUG (fixed): first pool version had `fiber-main` call itself after parking. Calls to a `( -- * )` word are not tail calls, so each reuse leaked a frame
+  (callstack length in a body: 6, 9, 12, ...). Symptom: the 100k-handle leak test went quadratic and looked like a hang (killed by timeout; no Factor bug report). Fixed with `loop`; added a regression test.
+- `check-resumable` now also refuses a k whose context alien is `expired?` (saved image); startup hook clears the pool.
+- No VM changes were made, so the core/compiler/threads regression suite was not required.
+- 33 tests pass (release default heap, release -young=1 -aging=1, debug -young=1 -aging=1). Numbers in NOTES.md.

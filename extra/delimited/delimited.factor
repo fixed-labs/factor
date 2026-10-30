@@ -1,15 +1,15 @@
 ! Copyright (C) 2026 Jake Zerrer.
 ! See https://factorcode.org/license.txt for BSD license.
-USING: accessors assocs classes classes.algebra combinators
-combinators.private sequences
-continuations continuations.private hashtables kernel kernel.private namespaces
-namespaces.private threads.private ;
+USING: accessors alien assocs classes classes.algebra combinators
+combinators.private continuations continuations.private
+hashtables init kernel kernel.private math namespaces
+namespaces.private sequences threads.private ;
 IN: delimited
 
 ! One-shot delimited continuations built on VM contexts (fibers).
-! Each prompt (reset0 / handle) runs its body on a fresh context; a
-! capture is a context switch back to the waiting parent, a resume is
-! a switch into the suspended context. Nothing is copied. See
+! Each prompt (reset0 / handle) runs its body on a separate context;
+! a capture is a context switch back to the waiting parent, a resume
+! is a switch into the suspended context. Nothing is copied. See
 ! DESIGN.md.
 
 SYMBOLS: +running+ +suspended+ +done+ +failed+ ;
@@ -27,6 +27,12 @@ ERROR: fiber-aborted ;
 TUPLE: shifted quot ;
 C: <shifted> shifted
 
+! Finished fibers park their context here for reuse instead of
+! returning it to the VM, whose own pool keeps only 10 and otherwise
+! munmaps/mmaps three stack segments per context.
+SYMBOL: fiber-pool-limit
+fiber-pool-limit [ 256 ] initialize
+
 <PRIVATE
 
 TUPLE: thrown error ;
@@ -36,6 +42,15 @@ SINGLETON: abort-token
 
 SYMBOL: current-fiber
 
+SYMBOL: fiber-pool
+
+! Parked contexts do not survive save-image.
+: init-fiber-pool ( -- ) V{ } clone fiber-pool set-global ;
+
+init-fiber-pool
+
+STARTUP-HOOK: init-fiber-pool
+
 : setup-fiber ( fiber -- fiber body )
     context >>ctx
     dup namestack>> set-namestack f >>namestack
@@ -43,14 +58,29 @@ SYMBOL: current-fiber
     dup current-fiber associate >n
     dup body>> [ f >>body ] dip ;
 
-! Runs on the fiber's own stacks. Never returns: switches to the
-! parent and recycles this context.
-: fiber-main ( fiber -- * )
+: run-body ( fiber -- result parent )
     setup-fiber
     [ call( -- obj ) +done+ ] [ nip +failed+ ] recover
     ! fiber result state
     pick state<<
-    swap parent>> set-context-and-delete ;
+    swap parent>> ;
+
+: pool-room? ( -- ? )
+    fiber-pool get-global length fiber-pool-limit get-global < ;
+
+! Runs on the fiber's own stacks and never returns. After a body
+! finishes, the context either parks itself in the pool (waiting in
+! set-context for its next fiber) or is recycled by the VM.
+: fiber-main ( fiber -- * )
+    ! A loop, not self-recursion: a call to a ( -- * ) word is not
+    ! compiled as a tail call, so recursion leaked a frame per reuse.
+    [
+        run-body pool-room? [
+            context fiber-pool get-global push
+            set-context t
+        ] [ set-context-and-delete ] if
+    ] loop
+    "unreachable" throw ;
 
 ! Parent side: k has suspended or finished, msg is what it sent.
 : dispatch ( k msg -- obj )
@@ -60,8 +90,11 @@ SYMBOL: current-fiber
         { +failed+ [ nip rethrow ] }
     } case ;
 
+: resumable? ( k -- ? )
+    dup state>> +suspended+ eq? [ ctx>> expired? not ] [ drop f ] if ;
+
 : check-resumable ( k -- k )
-    dup state>> +suspended+ eq? [ continuation-not-resumable ] unless ;
+    dup resumable? [ continuation-not-resumable ] unless ;
 
 ! Switch into k delivering obj; returns when k suspends or finishes.
 : switch-in ( obj k -- k msg )
@@ -78,10 +111,12 @@ SYMBOL: current-fiber
         context >>parent
         +running+ >>state ;
 
-! Start body on a new context; returns at its first suspension or at
-! its end. Leaves the fiber below the message.
+! Start body on a parked or new context; returns at its first
+! suspension or at its end. Leaves the fiber below the message.
 : start-fiber ( body handler -- k msg )
-    <fiber> dup [ fiber-main ] start-context ;
+    <fiber> fiber-pool get-global [
+        dup [ fiber-main ] start-context
+    ] [ pop over swap set-context ] if-empty ;
 
 : nearest-fiber ( msg -- msg fiber )
     current-fiber get [ no-prompt ] unless* ;
@@ -116,7 +151,7 @@ PRIVATE>
 ! point so cleanup code runs, then frees its context. No-op if k is
 ! running or finished.
 : discard ( k -- )
-    dup state>> +suspended+ eq? [
+    dup resumable? [
         abort-token swap switch-in
         over state>> {
             { +done+ [ 2drop ] }

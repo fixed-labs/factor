@@ -99,9 +99,18 @@ So the whole mechanism is a Factor library:
   stacks are GC roots) until resumed or `discard`ed. `discard` resumes it with
   an abort token that throws `fiber-aborted` inside the body, so `finally` /
   `[ ] cleanup` blocks run, then frees the context. There are no finalizers on
-  aliens, so an un-discarded fiber is leaked; `handle` clauses that return
-  without resuming discard k automatically unless the clause stored it
-  (see `handle` docs).
+  aliens, so an un-discarded fiber is leaked. `handle`/`handle-with` discard
+  the fiber when they return if it is still suspended (no clause resumed it);
+  this is done once per handler, *not* after every clause, so clauses still
+  resume in tail position and a long-running handler's stack stays flat.
+  `handle*`/`handle-with*` skip it, for uses where k escapes (generators).
+- **Context reuse**: the VM's own pool keeps only 10 unused contexts; beyond
+  that a context costs three mmaps to create and three munmaps to free
+  (20-35 us each way). A finished body therefore parks its context in a
+  library-level pool (`fiber-pool-limit`, default 256) by waiting in
+  `set-context`, and the next prompt switches straight into it instead of
+  calling `(start-context)`. The pool is cleared by a startup hook because
+  context aliens do not survive `save-image`.
 - **Green threads**: a body can `yield`/`sleep`; the scheduler boxes whatever
   context is current (the fiber) and switches back to it later. A k may even
   be resumed from a different thread (its parent becomes that thread's
@@ -112,3 +121,12 @@ So the whole mechanism is a Factor library:
 - Multi-shot continuations (would need (2) or a stack copy of the fiber).
 - Bodies that exit their thread with `stop`, or callbacks that return across a
   fiber boundary, are unsupported.
+
+## As built
+
+Names: `reset0`/`shift0` (the handler runs outside the prompt and k includes
+it, i.e. shift0 semantics; plain `shift` and `resume` also clash with `math`
+and `threads`), `resume-k`, `throw-k`, `discard`, `perform`,
+`handle`/`handle*` (class => clause tables) and `handle-with`/`handle-with*`
+(hand-written dispatch, `unhandled` to forward). Results are in NOTES.md, the
+working log in LOG.md.
