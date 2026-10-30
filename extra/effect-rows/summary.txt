@@ -1,0 +1,1 @@
+Static algebraic-effect rows on Factor stack effects (prototype)

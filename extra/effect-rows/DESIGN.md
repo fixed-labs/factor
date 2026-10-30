@@ -117,3 +117,16 @@ where omitting the variable makes extra effects an error.
 * `effect-rows.io` -- `EFFECT: io` and `EFFECTFUL:` annotations on a few
   `io` words.
 * Tests for accepted and rejected programs.
+
+## Additions after the first slice
+
+* `effect-rows.streams` -- the io stream-protocol generics asserted as
+  `stream-io`, for the scaling experiment.
+* Transitive mode: `with-transitive-rows` makes an unannotated non-inline
+  word contribute the row inferred from its body (via `build-tree`), and a
+  generic word the union of its methods. Rows are cached globally; the
+  cache is dropped when a cached or annotated word is redefined. Recursion
+  is handled by re-running the root until no cached row changes.
+  `row-witness ( word label -- path )` returns a shortest call chain to a
+  word that carries the label directly. See NOTES.md for what this shows
+  about basis.

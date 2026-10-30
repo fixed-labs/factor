@@ -1,6 +1,6 @@
 ! Copyright (C) 2026 Jake Zerrer.
 ! See https://factorcode.org/license.txt for BSD license.
-USING: accessors arrays combinators compiler.tree.builder compiler.units
+USING: accessors arrays assocs combinators combinators.short-circuit compiler.tree.builder compiler.units
 continuations effects effects.parser fry generic hash-sets kernel
 lexer locals namespaces parser sequences sets sorting splitting stack-checker
 stack-checker.state stack-checker.values summary vectors
@@ -124,10 +124,11 @@ DEFER: parse-row-effect
 
 ! Inference: an observer plugged into the stack checker
 
-TUPLE: row-observer scopes ;
+! scopes: a stack of label sets; seen: every word applied (call edges)
+TUPLE: row-observer scopes seen ;
 
 : <row-observer> ( -- observer )
-    HS{ } clone 1vector row-observer boa ;
+    HS{ } clone 1vector HS{ } clone row-observer boa ;
 
 : current-scope ( observer -- set ) scopes>> last ;
 
@@ -144,20 +145,25 @@ SYMBOL: transitive-rows?
 
 DEFER: transitive-labels
 
-: word-labels ( word -- seq )
+! Labels a word carries itself, by assertion or declaration (f: none)
+: direct-labels ( word -- seq/f )
     {
         { [ dup "effect-row" word-prop ] [ asserted-labels ] }
         { [ dup inline? ] [ drop { } ] }
         { [ dup stack-effect row-effect? ] [ declared-labels ] }
-        { [ transitive-rows? get ] [ transitive-labels ] }
-        [ drop { } ]
+        [ drop f ]
     } cond ;
+
+: word-labels ( word -- seq )
+    dup direct-labels [ nip ] [
+        transitive-rows? get [ transitive-labels ] [ drop { } ] if
+    ] if* ;
 
 : add-labels ( seq observer -- )
     current-scope '[ _ adjoin ] each ;
 
 M: row-observer observe-word
-    [ word-labels ] dip add-labels ;
+    [ seen>> adjoin ] [ [ word-labels ] dip add-labels ] 2bi ;
 
 M: row-observer observe-quotation-enter
     nip HS{ } clone swap scopes>> push ;
@@ -201,9 +207,14 @@ M:: declared-effect escaping ( effects known -- effects' )
 M: row-observer observe-quotation-exit
     [ scopes>> pop members swap escaping ] keep add-labels ;
 
+: (with-row-observer) ( quot -- observer )
+    <row-observer> [ inference-observer rot with-variable ] keep ; inline
+
+: observer-labels ( observer -- labels )
+    scopes>> first members sort-labels ;
+
 : with-row-observer ( quot -- labels )
-    <row-observer> [ inference-observer rot with-variable ] keep
-    scopes>> first members sort-labels ; inline
+    (with-row-observer) observer-labels ; inline
 
 : inferred-row ( word -- labels )
     '[ _ build-tree drop ] with-row-observer ;
@@ -220,17 +231,31 @@ SYMBOL: row-changed?
 SYMBOL: row-failures
 SYMBOL: rows-inferred
 SYMBOL: visited
+SYMBOL: row-callees
 
 : reset-row-cache ( -- )
     H{ } clone row-cache set-global
     HS{ } clone final-rows set-global
     HS{ } clone row-failures set-global
+    H{ } clone row-callees set-global
     0 rows-inferred set-global ;
 
 reset-row-cache
 
 SINGLETON: row-cache-observer
-M: row-cache-observer definitions-changed 2drop reset-row-cache ;
+! Macro expansion during inference can finish nested compilation units
+! (temporary words), so only drop the cache when a word it depends on changed.
+: row-relevant? ( obj -- ? )
+    dup word? [
+        {
+            [ row-cache get-global key? ]
+            [ "effect-row" word-prop ]
+            [ stack-effect row-effect? ]
+        } 1||
+    ] [ drop f ] if ;
+
+M: row-cache-observer definitions-changed
+    drop members [ row-relevant? ] any? [ reset-row-cache ] when ;
 
 row-cache-observer definition-observers get-global member-eq?
 [ row-cache-observer add-definition-observer ] unless
@@ -241,12 +266,17 @@ GENERIC: body-labels ( word -- seq )
 
 M: word body-labels
     dup primitive? [ drop { } ] [
-        [ inferred-row ]
-        [ drop row-failures get-global adjoin { } ] recover
+        [
+            dup '[ _ build-tree drop ] (with-row-observer)
+            [ seen>> members swap row-callees get-global set-at ]
+            [ observer-labels ] bi
+        ] [ drop row-failures get-global adjoin { } ] recover
     ] if ;
 
 M: generic body-labels
-    "methods" word-prop values [ word-labels ] map concat ;
+    dup "methods" word-prop values
+    [ swap row-callees get-global set-at ]
+    [ [ word-labels ] map concat ] bi ;
 
 : transitive-labels ( word -- seq )
     dup final-rows get-global in? [ cached-row ] [
@@ -278,6 +308,30 @@ M: generic body-labels
 
 : with-transitive-rows ( ..a quot: ( ..a -- ..b ) -- ..b )
     [ t transitive-rows? ] dip with-variable ; inline
+
+! After a transitive inference: a shortest call chain from word to a word
+! that carries label directly. Explains where a label in a row comes from.
+:: row-witness ( word label -- path/f )
+    HS{ } clone :> seen
+    V{ } clone :> queue
+    f :> found!
+    0 :> i!
+    word 1array queue push
+    word seen adjoin
+    [ found not i queue length < and ] [
+        i queue nth :> path
+        i 1 + i!
+        path last :> w
+        label w direct-labels member? [ path found! ] [
+            w row-callees get-global at [| c |
+                c seen in? [
+                    c seen adjoin
+                    path c suffix queue push
+                ] unless
+            ] each
+        ] if
+    ] while
+    found ;
 
 :: infer-effects ( quot -- effect labels )
     f :> e!
