@@ -38,3 +38,16 @@ Branch: `effects/b-static` (from `master`). VM checkout: /home/dev/repo.
   `parse-word` (gives a proper no-word error with restarts) and taught
   the test's `unwrap` to strip both `lexer-error` and `condition`.
   Second run: 0 failures.
+- Started `./factor -run=tools.test resource:core compiler` on the patched
+  image (log: ~/core-tests.log) and `tools.test stack-checker`
+  (~/sc-tests.log: 159 tests, 0 failures).
+- Added opt-in *transitive rows* (`transitive-rows?`, `with-transitive-rows`):
+  rows of unannotated non-inline words are inferred from their bodies via
+  `build-tree`; a generic's row is the union of its methods' rows; cached
+  globally, cache dropped by a definition observer on any redefinition;
+  recursion (incl. mutual and through dispatch) handled by re-running the
+  root until no cached row changes, then marking reached rows final.
+  (Spliced in with a throwaway perl script.) Added `effect-rows.streams`
+  asserting a `stream-io` label on the io stream-protocol generics.
+- Tests: 44 tests, 0 failures (incl. recursion, mutual recursion, generic
+  union, and an `E:` word rejected in transitive mode through a helper).

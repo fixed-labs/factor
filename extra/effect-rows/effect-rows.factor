@@ -1,8 +1,8 @@
 ! Copyright (C) 2026 Jake Zerrer.
 ! See https://factorcode.org/license.txt for BSD license.
-USING: accessors arrays combinators compiler.tree.builder
-effects effects.parser fry hash-sets kernel lexer locals
-namespaces parser sequences sets sorting splitting stack-checker
+USING: accessors arrays combinators compiler.tree.builder compiler.units
+continuations effects effects.parser fry generic hash-sets kernel
+lexer locals namespaces parser sequences sets sorting splitting stack-checker
 stack-checker.state stack-checker.values summary vectors
 vocabs.parser words words.symbol ;
 IN: effect-rows
@@ -137,8 +137,21 @@ TUPLE: row-observer scopes ;
 : declared-labels ( word -- seq )
     dup inline? [ drop { } ] [ stack-effect row-of drop ] if ;
 
+! When true, the row of an unannotated non-inline word is inferred from its
+! body (and a generic's row is the union of its methods' rows) instead of
+! being assumed empty. See "Transitive rows" below.
+SYMBOL: transitive-rows?
+
+DEFER: transitive-labels
+
 : word-labels ( word -- seq )
-    [ asserted-labels ] [ declared-labels ] bi append ;
+    {
+        { [ dup "effect-row" word-prop ] [ asserted-labels ] }
+        { [ dup inline? ] [ drop { } ] }
+        { [ dup stack-effect row-effect? ] [ declared-labels ] }
+        { [ transitive-rows? get ] [ transitive-labels ] }
+        [ drop { } ]
+    } cond ;
 
 : add-labels ( seq observer -- )
     current-scope '[ _ adjoin ] each ;
@@ -192,12 +205,83 @@ M: row-observer observe-quotation-exit
     <row-observer> [ inference-observer rot with-variable ] keep
     scopes>> first members sort-labels ; inline
 
-:: infer-effects ( quot -- effect labels )
-    f :> e!
-    [ quot infer e! ] with-row-observer e swap ;
-
 : inferred-row ( word -- labels )
     '[ _ build-tree drop ] with-row-observer ;
+
+! Transitive rows. Rows of unannotated words are computed on demand and
+! cached globally (the cache is dropped whenever definitions change).
+! Recursion, including through generic dispatch, is handled by iterating
+! from the root until no cached row changes; rows reached by a finished
+! root are final.
+
+SYMBOL: row-cache
+SYMBOL: final-rows
+SYMBOL: row-changed?
+SYMBOL: row-failures
+SYMBOL: rows-inferred
+SYMBOL: visited
+
+: reset-row-cache ( -- )
+    H{ } clone row-cache set-global
+    HS{ } clone final-rows set-global
+    HS{ } clone row-failures set-global
+    0 rows-inferred set-global ;
+
+reset-row-cache
+
+SINGLETON: row-cache-observer
+M: row-cache-observer definitions-changed 2drop reset-row-cache ;
+
+row-cache-observer definition-observers get-global member-eq?
+[ row-cache-observer add-definition-observer ] unless
+
+: cached-row ( word -- seq ) row-cache get-global at [ { } ] unless* ;
+
+GENERIC: body-labels ( word -- seq )
+
+M: word body-labels
+    dup primitive? [ drop { } ] [
+        [ inferred-row ]
+        [ drop row-failures get-global adjoin { } ] recover
+    ] if ;
+
+M: generic body-labels
+    "methods" word-prop values [ word-labels ] map concat ;
+
+: transitive-labels ( word -- seq )
+    dup final-rows get-global in? [ cached-row ] [
+        dup visited get in? [ cached-row ] [
+            dup visited get adjoin
+            rows-inferred counter drop
+            dup body-labels sort-labels over cached-row over =
+            [ drop ] [ over row-cache get-global set-at t row-changed? set-global ] if
+            cached-row
+        ] if
+    ] if ;
+
+:: fixpoint-row ( quot: ( -- labels ) -- labels )
+    f :> result!
+    HS{ } clone :> seen
+    [
+        HS{ } clone visited [
+            f row-changed? set-global
+            quot call result!
+            visited get members seen adjoin-all
+        ] with-variable
+        row-changed? get-global
+    ] loop
+    seen members final-rows get-global adjoin-all
+    result ; inline
+
+: root-row ( quot: ( -- labels ) -- labels )
+    transitive-rows? get [ fixpoint-row ] [ call ] if ; inline
+
+: with-transitive-rows ( ..a quot: ( ..a -- ..b ) -- ..b )
+    [ t transitive-rows? ] dip with-variable ; inline
+
+:: infer-effects ( quot -- effect labels )
+    f :> e!
+    [ [ quot infer e! ] with-row-observer ] root-row e swap ;
 
 ERROR: undeclared-effects word effects declared ;
 
@@ -205,7 +289,7 @@ M: undeclared-effects summary
     drop "A word performs effects missing from its declared effect row" ;
 
 : check-word-row ( word -- )
-    dup inferred-row over stack-effect row-of drop diff
+    dup '[ _ inferred-row ] root-row over stack-effect row-of drop diff
     [ drop ] [ over stack-effect row-of drop undeclared-effects ] if-empty ;
 
 ! Definers

@@ -1,7 +1,8 @@
 ! Copyright (C) 2026 Jake Zerrer.
 ! See https://factorcode.org/license.txt for BSD license.
 USING: accessors continuations effect-rows effect-rows.io effect-rows.state
-effects eval io kernel lexer math math.parser sequences tools.test vocabs.parser words ;
+effects eval io kernel lexer math math.parser sequences strings
+tools.test vocabs.parser words ;
 IN: effect-rows.tests
 
 : unwrap ( error -- error' )
@@ -101,3 +102,29 @@ E: call-io ( quot: ( -- | io ) -- | io ) call ;
 ! a quotation that violates the handler's declared quotation row
 [ "USING: effect-rows effect-rows.io effect-rows.state io kernel ; IN: effect-rows.tests.r6 E: r6 ( -- n | io ) 0 [ \"x\" print ] with-pure-state ;" eval( -- ) ]
 [ unwrap quotation-effect-mismatch? ] must-fail-with
+
+! ---- transitive rows (opt-in): rows of unannotated words are inferred
+
+: helper ( -- ) get-state drop ;
+{ { } } [ [ helper ] infer-effects nip ] unit-test ! default: assumed pure
+{ { state } } [ [ [ helper ] infer-effects nip ] with-transitive-rows ] unit-test
+
+: rec-helper ( n -- ) dup 0 > [ 1 - get-state drop rec-helper ] [ drop ] if ;
+{ { state } } [ [ [ 3 rec-helper ] infer-effects nip ] with-transitive-rows ] unit-test
+
+! mutual recursion needs the fixpoint: pong only reaches io through ping
+DEFER: ping
+: pong ( n -- ) dup 0 > [ 1 - ping ] [ drop ] if ;
+: ping ( n -- ) dup 0 > [ 1 - "x" print pong ] [ drop ] if ;
+{ { io } } [ [ [ 3 pong ] infer-effects nip ] with-transitive-rows ] unit-test
+{ { io } } [ [ [ 3 ping ] infer-effects nip ] with-transitive-rows ] unit-test
+
+! generic words: the union of all methods, whatever the receiver
+GENERIC: speak ( obj -- )
+M: integer speak drop ;
+M: string speak print ;
+{ { io } } [ [ [ 3 speak ] infer-effects nip ] with-transitive-rows ] unit-test
+
+! an E: word checked in transitive mode sees through plain helpers
+[ [ "USING: effect-rows effect-rows.tests ; IN: effect-rows.tests.t1 E: t1 ( -- | ) helper ;" eval( -- ) ] with-transitive-rows ]
+[ unwrap effects>> { state } = ] must-fail-with
